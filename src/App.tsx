@@ -4,12 +4,12 @@ import Shop from './components/Shop';
 import Collection from './components/Collection';
 import Achievements from './components/Achievements';
 import HatchModal from './components/HatchModal';
-import { getPetDef, EGG_TYPES } from './data';
+import { getPetDef } from './data';
 import type { Pet, GameState } from './store';
-import {
-  loadState, saveState, resetState, createPet,
-  getEmptyCells, pickWeightedLevel,
-} from './store';
+import { loadState, saveState, resetState } from './store';
+import { useMerge } from './gameplay/merge';
+import { useCheckin } from './gameplay/checkin';
+import { useShop } from './gameplay/shop';
 
 type Tab = 'home' | 'shop' | 'collection' | 'achievements';
 
@@ -27,18 +27,13 @@ export default function App() {
   const [hatchPet, setHatchPet] = useState<Pet | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [newPetCell, setNewPetCell] = useState<number | null>(null);
-  const [mergeCell, setMergeCell] = useState<number | null>(null);
 
-  // Persist state
   useEffect(() => { saveState(state); }, [state]);
 
-  // Check achievements on state change
   useEffect(() => {
-    // Import dynamically to avoid issues
     import('./data').then(({ ACHIEVEMENTS }) => {
       ACHIEVEMENTS.forEach(ach => {
         if (!state.unlockedAchievements.includes(ach.id) && ach.check(state.collected)) {
-          // Achievement ready to claim (don't auto-claim, let user click)
         }
       });
     });
@@ -53,120 +48,28 @@ export default function App() {
     }, 2000);
   }, []);
 
-  const updateGrid = useCallback((newGrid: (Pet | null)[], extra?: Partial<GameState>) => {
-    setState(prev => {
-      const next = { ...prev, grid: newGrid, ...extra };
-      return next;
-    });
-  }, []);
+  const { handleMerge, handleSwap, mergeCell } = useMerge({
+    state,
+    setState,
+    showToast,
+    setNewPetCell,
+  });
 
-  const handleMerge = useCallback((fromIdx: number, toIdx: number) => {
-    const fromPet = state.grid[fromIdx];
-    const toPet = state.grid[toIdx];
-    if (!fromPet || !toPet || fromPet.level !== toPet.level) return;
-    if (fromPet.level >= 10) {
-      showToast('已达最高等级，无法继续合成', 'info');
-      return;
-    }
+  const { handleCheckin } = useCheckin({
+    state,
+    setState,
+    showToast,
+    setHatchPet,
+    setNewPetCell,
+  });
 
-    const newLevel = fromPet.level + 1;
-    const newPet = createPet(newLevel);
-    const newGrid = [...state.grid];
-    newGrid[fromIdx] = null;
-    newGrid[toIdx] = newPet;
-
-    const def = getPetDef(newLevel);
-    const newCollected = { ...state.collected, [newLevel]: true };
-    const newHighest = Math.max(state.highestLevel, newLevel);
-
-    updateGrid(newGrid, {
-      collected: newCollected,
-      totalMerges: state.totalMerges + 1,
-      highestLevel: newHighest,
-    });
-
-    setMergeCell(toIdx);
-    setNewPetCell(toIdx);
-    setTimeout(() => setNewPetCell(null), 600);
-
-    showToast(`合成成功！获得 Lv.${newLevel} ${def.name}`, 'success');
-
-    // Auto-check and show achievement notifications
-    import('./data').then(({ ACHIEVEMENTS }) => {
-      ACHIEVEMENTS.forEach(ach => {
-        if (!state.unlockedAchievements.includes(ach.id) && ach.check(newCollected)) {
-          showToast(`🏆 成就达成: ${ach.name}`, 'gold');
-        }
-      });
-    });
-  }, [state, updateGrid, showToast]);
-
-  const handleSwap = useCallback((fromIdx: number, toIdx: number) => {
-    const newGrid = [...state.grid];
-    const temp = newGrid[fromIdx];
-    newGrid[fromIdx] = newGrid[toIdx];
-    newGrid[toIdx] = temp;
-    updateGrid(newGrid);
-  }, [state.grid, updateGrid]);
-
-  const handleCheckin = useCallback(() => {
-    const today = new Date().toISOString().split('T')[0];
-    if (state.lastCheckinDate === today) {
-      showToast('今天已经签到过了', 'info');
-      return;
-    }
-
-    const emptyCells = getEmptyCells(state.grid);
-    if (emptyCells.length === 0) {
-      showToast('宠物格已满，请先合成腾出空间', 'info');
-      return;
-    }
-
-    const level = pickWeightedLevel(1, 2);
-    const pet = createPet(level);
-    const cellIdx = emptyCells[Math.floor(Math.random() * emptyCells.length)];
-    const newGrid = [...state.grid];
-    newGrid[cellIdx] = pet;
-
-    const newCollected = { ...state.collected, [level]: true };
-    updateGrid(newGrid, {
-      collected: newCollected,
-      lastCheckinDate: today,
-    });
-    setHatchPet(pet);
-    setNewPetCell(cellIdx);
-    setTimeout(() => setNewPetCell(null), 600);
-  }, [state, updateGrid, showToast]);
-
-  const handleBuyEgg = useCallback((eggId: string) => {
-    const egg = EGG_TYPES.find(e => e.id === eggId);
-    if (!egg) return;
-    if (state.gold < egg.price) {
-      showToast('金币不足', 'info');
-      return;
-    }
-    const emptyCells = getEmptyCells(state.grid);
-    if (emptyCells.length === 0) {
-      showToast('宠物格已满，请先合成腾出空间', 'info');
-      return;
-    }
-
-    const level = pickWeightedLevel(egg.minLevel, egg.maxLevel);
-    const pet = createPet(level);
-    const cellIdx = emptyCells[Math.floor(Math.random() * emptyCells.length)];
-    const newGrid = [...state.grid];
-    newGrid[cellIdx] = pet;
-
-    const newCollected = { ...state.collected, [level]: true };
-    updateGrid(newGrid, {
-      collected: newCollected,
-      gold: state.gold - egg.price,
-    });
-    setHatchPet(pet);
-    setNewPetCell(cellIdx);
-    setTimeout(() => setNewPetCell(null), 600);
-    showToast(`花费 ${egg.price} 金币购买了 ${egg.name}`, 'gold');
-  }, [state, updateGrid, showToast]);
+  const { handleBuyEgg } = useShop({
+    state,
+    setState,
+    showToast,
+    setHatchPet,
+    setNewPetCell,
+  });
 
   const handleClaimAchievement = useCallback((id: string, reward: number) => {
     if (state.unlockedAchievements.includes(id)) return;
@@ -184,9 +87,9 @@ export default function App() {
     const def = getPetDef(pet.level);
     const newGrid = [...state.grid];
     newGrid[idx] = null;
-    updateGrid(newGrid, { gold: state.gold + def.value });
+    setState(prev => ({ ...prev, grid: newGrid, gold: prev.gold + def.value }));
     showToast(`出售 ${def.name} 获得 ${def.value} 金币`, 'gold');
-  }, [state, updateGrid, showToast]);
+  }, [state, showToast]);
 
   const handleReset = useCallback(() => {
     if (window.confirm('确定要重置所有数据吗？此操作不可撤销。')) {
@@ -196,7 +99,6 @@ export default function App() {
     }
   }, [showToast]);
 
-  // Sell mode: long press on pet
   const [sellMode, setSellMode] = useState(false);
 
   const gridContent = tab === 'home' ? (
